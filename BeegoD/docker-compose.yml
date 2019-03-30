@@ -1,0 +1,19 @@
+version: '2.1'
+services:
+  service:
+    container_name: beegod.dev
+    build:
+      context: .
+    expose:
+      - 80/tcp
+    networks:
+      - godockerdev_default
+      - local
+    volumes:
+      - .:/go/src/BeegoD
+networks:
+  godockerdev_default:
+    external:
+      name: godockerdev_default
+  local:
+    internal: true
