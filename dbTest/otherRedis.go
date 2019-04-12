@@ -141,5 +141,5 @@ func main()  {
 	MsetnxTest(redisdb)
 	IncrTest(redisdb)
 	IncrByTest(redisdb)
-	AppendTest(redisdb)
+	AppendTest(redisdb)  //返回7，append后字符串"abcdef"长度为6
 }

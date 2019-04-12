@@ -68,7 +68,7 @@ func (c *ConCreateCompany) LineOfDuty() {
 		return
 	}
 	for _, val := range c.list {
-		val.LineOfDuty()
+		val.LidneOfDuty()
 	}
 }
 //人力资源部
