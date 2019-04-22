@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -50,10 +51,51 @@ func login(w http.ResponseWriter, r *http.Request) {
 		template.HTMLEscape(w, []byte(r.Form.Get("username")))		//输出到客户端
 	}
 }
+
+//处理upload逻辑
+func upload(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("method:", r.Method)
+	if r.Method == "GET" {
+		crutime := time.Now().Unix()
+		h := md5.New()
+		io.WriteString(h, strconv.FormatInt(crutime, 10))
+		token := fmt.Sprintf("%x", h.Sum(nil))
+
+		t, _ := template.ParseFiles("src/web/upload.html")
+		t.Execute(w, token)
+	} else {
+		r.ParseMultipartForm(32 << 20)
+		// 这里一定要记得 r.ParseMultipartForm(), 否则 r.MultipartForm 是空的
+		// 调用 r.FormFile() 的时候会自动执行 r.ParseMultipartForm()
+		// 写明缓冲的大小。如果超过缓冲，文件内容会被放在临时目录中，而不是内存。过大可能较多占用内存，过小可能增加硬盘 I/O
+		// FormFile() 时调用 ParseMultipartForm() 使用的大小是 32 << 20，32MB
+		file, handler, err := r.FormFile("uploadfile")
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		defer file.Close()
+		fmt.Fprintf(w, "%v", handler.Header)
+
+		f, err := os.OpenFile("./test/"+ handler.Filename, os.O_WRONLY|os.O_CREATE, 0666)
+		// 此处假设当前目录下已存在test目录
+
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		defer f.Close()
+		io.Copy(f, file)
+		//我们可以通过r.FormFile获取上面的文件句柄，然后实例中使用了io.Copy来存储文件。
+		//获取其他非文件字段信息的时候就不需要调用r.ParseForm，因为在需要的时候Go自动会去调用。
+		// 而且ParseMultipartForm调用一次之后，后面再次调用不会再有效果。
+	}
+}
+
 func main() {
 	http.HandleFunc("/", sayHelloName)	//设置访问路由
 	http.HandleFunc("/login", login)         //设置访问的路由
-
+	http.HandleFunc("/upload", upload)
 	err := http.ListenAndServe(":9090", nil)
 	if err != nil {
 		log.Fatal("listenAndServer :", err)
