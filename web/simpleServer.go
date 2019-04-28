@@ -2,16 +2,57 @@ package main
 
 import (
 	"crypto/md5"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"html/template"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+type Manager struct {
+	cookieName string	// private cookiename
+	lock sync.Mutex		// protects session
+	provider Provider
+	MaxLifeTime int64
+}
+
+type Provider interface {
+	SessionInit(sid string) (Session, error)
+	SessionRead(sid string) (Session, error)
+	SessionDestroy(sid string) error
+	SessionGC(maxLifeTime int64)
+}
+
+type Session interface {
+	Set(key, value interface{}) error
+	Get(key interface{}) interface{}
+	Delete(key interface{}) error
+	SessionID() string	// current sessionID
+}
+var provides = make(map[string]Provider)
+
+func NewManager(providerName, cookieName string, MaxLifeTime int64) (*Manager, error) {
+	provider, ok := provides[providerName]
+	if !ok {
+		return nil, fmt.Errorf("session:unknown provide %q (forgotten import?)", providerName)
+	}
+	return &Manager{provider: provider, cookieName: cookieName, MaxLifeTime: MaxLifeTime}, nil
+}
+
+var globalSessions *Manager
+
+func init() {
+	globalSessions, _ = NewManager("memory", "gosessionid", 3600)
+
+}
 
 func sayHelloName(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()	//解析参数，默认是不会解析的
@@ -28,28 +69,57 @@ func sayHelloName(w http.ResponseWriter, r *http.Request) {
 }
 
 func login(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("method:", r.Method)	//获取请求的方法
+	sess := globalSessions.SessionStart(w, r)
+	r.ParseForm()
 	if r.Method == "GET" {
-		crutime := time.Now().Unix()
-		h := md5.New()
-		io.WriteString(h, strconv.FormatInt(crutime, 10))
-		token := fmt.Sprintf("%x", h.Sum(nil))
-
-		t, _ := template.ParseFiles("src/web/form.html")
-		t.Execute(w, token)
+		t, _ := template.ParseFiles("src/web/upload.html")
+		w.Header().Set("Content-Type", "text/html")
+		t.Execute(w, sess.Get("username"))
 	} else {
-		//请求的是登录数据，那么执行登录的逻辑判断
-		r.ParseForm()
-		if token:=r.Form.Get("token");token!="" {
-			//验证token的合法性
-		} else {
-			//不存在token报错
-		}
-		fmt.Println("username length:", len(r.Form["username"][0]))
-		fmt.Println("username:", template.HTMLEscapeString(r.Form.Get("username")))//输出到服务器端
-		fmt.Println("password:", template.HTMLEscapeString(r.Form.Get("password")))
-		template.HTMLEscape(w, []byte(r.Form.Get("username")))		//输出到客户端
+		sess.Set("username", r.Form["username"])
+		http.Redirect(w, r, "/", 302)
 	}
+}
+
+func (manager *Manager) SessionDestroy(w http.ResponseWriter, r *http.Request){
+	cookie, err := r.Cookie(manager.cookieName)
+	if err != nil || cookie.Value == "" {
+		return
+	} else {
+		manager.lock.Lock()
+		defer manager.lock.Unlock()
+		manager.provider.SessionDestroy(cookie.Value)
+		expiration := time.Now()
+		cookie := http.Cookie{Name: manager.cookieName, Path: "/", HttpOnly: true, Expires: expiration, MaxAge: -1}
+		http.SetCookie(w, &cookie)
+	}
+}
+
+func count(w http.ResponseWriter, r *http.Request) {
+	sess := globalSessions.SessionStart(w, r)
+	createtime := sess.Get("createtime")
+	if createtime == nil {
+		sess.Set("createtime", time.Now().Unix())
+	} else if (createtime.(int64) + 360) < (time.Now().Unix()) {
+		globalSessions.SessionDestroy(w, r)
+		sess = globalSessions.SessionStart(w, r)
+	}
+	ct := sess.Get("countnum")
+	if ct == nil {
+		sess.Set("countnum", 1)
+	} else {
+		sess.Set("countnum", (ct.(int) + 1))
+	}
+	t, _ := template.ParseFiles("src/web/upload.html")
+	w.Header().Set("Content-Type", "text/html")
+	t.Execute(w, sess.Get("countnum"))
+}
+
+func (manager *Manager) GC() {
+	manager.lock.Lock()
+	defer manager.lock.Unlock()
+	manager.provider.SessionGC(manager.MaxLifeTime)
+	time.AfterFunc(time.Duration(manager.MaxLifeTime), func() { manager.GC() })
 }
 
 //处理upload逻辑
@@ -90,6 +160,44 @@ func upload(w http.ResponseWriter, r *http.Request) {
 		//获取其他非文件字段信息的时候就不需要调用r.ParseForm，因为在需要的时候Go自动会去调用。
 		// 而且ParseMultipartForm调用一次之后，后面再次调用不会再有效果。
 	}
+}
+
+// Register makes a session provide available by the provided name.
+// If Register is called twice with the same name or if driver is nil,
+// it panics.
+func Register(name string, provider Provider) {
+	if provider == nil {
+		panic("session: Register provider is nil	")
+	}
+	if _, dup := provides[name]; dup {
+		panic("session: Register called twice for provider" + name)
+	}
+	provides[name] = provider
+}
+
+func (manager *Manager) sessionId() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return base64.URLEncoding.EncodeToString(b)
+}
+
+func (manager *Manager) SessionStart(w http.ResponseWriter, r *http.Request) (session Session) {
+	manager.lock.Lock()
+	defer manager.lock.Unlock()
+
+	cookie, err := r.Cookie(manager.cookieName)
+	if err != nil || cookie.Value == "" {
+		sid := manager.sessionId()
+		session, _ = manager.provider.SessionInit(sid)
+		cookie := http.Cookie{Name: manager.cookieName, Value: url.QueryEscape(sid), Path: "/", HttpOnly: true, MaxAge: int(manager.MaxLifeTime)}
+		http.SetCookie(w, &cookie)
+	} else {
+		sid, _ := url.QueryUnescape(cookie.Value)
+		session, _ = manager.provider.SessionRead(sid)
+	}
+	return
 }
 
 func main() {
