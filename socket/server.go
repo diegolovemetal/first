@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -20,10 +22,37 @@ func main() {
 		}
 		b := make([]byte,1024)
 		conn.Read(b)
-		daytime := time.Now().String()
-		conn.Write([]byte(daytime))
-		conn.Close()
+		go handleClient(conn)
 		}
+}
+
+func handleClient(conn net.Conn)  {
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))	// set 2 minutes timeout
+	request := make([]byte, 128)	// set maxium request length to 128B to prevent flood attack
+	defer conn.Close()
+	for {
+		read_len, err := conn.Read(request)
+
+		if err != nil {
+			fmt.Println(err)
+			break
+		}
+
+		if read_len == 0 {
+			break	// connection already closed by client
+		} else if strings.TrimSpace(string(request[:read_len])) == "timestamp" {
+			daytime := strconv.FormatInt(time.Now().Unix(), 10)
+			conn.Write([]byte(daytime))
+		} else {
+			daytime := time.Now().String()
+			conn.Write([]byte(daytime))
+		}
+		request = make([]byte, 128)	// clear last read content
+	}
+	//
+	//defer conn.Close()
+	//daytime := time.Now().String()
+	//conn.Write([]byte(daytime))
 }
 
 func checkError(err error) {
