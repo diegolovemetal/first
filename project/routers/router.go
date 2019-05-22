@@ -1,11 +1,13 @@
 package routers
 
 import (
-	admin "project/admin/controllers"
 	"github.com/astaxie/beego"
-
+	"project/admin/controllers"
 )
 
 func init() {
-    beego.AutoRouter(&admin.UserController{})
+   	//固定路由
+   	beego.Router("/admin", &admin.UserController{}, "*:Index")
+   	beego.Router("/admin/add/:user_name/:user_pwd/:mobile", &admin.UserController{}, "get:Insert")
+   	beego.Router("/admin/index", &admin.UserController{}, "get:Index")
 }
